@@ -78,9 +78,15 @@ jobs:
       - name: Compile VisualGram arm64
         working-directory: telegram-native
         run: |
+          echo "=== Build environment ==="
+          python3 --version
+          bazel --version 2>/dev/null || which bazel || echo "Bazel not in PATH"
+          free -h 2>/dev/null || vm_stat | head -5
+          df -h .
+          echo "=== Starting Bazel build ==="
           python3 build-system/Make/Make.py \
             --cacheDir "$RUNNER_TEMP/telegram-bazel-cache" \
-            build --continueOnError \
+            build --continueOnError --verbose_failures \
             --configurationPath "$RUNNER_TEMP/native-configuration.json" \
             --codesigningInformationPath "$RUNNER_TEMP/native-signing" \
             --buildNumber "$((1000 + GITHUB_RUN_NUMBER))" \
