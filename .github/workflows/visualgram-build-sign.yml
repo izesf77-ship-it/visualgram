@@ -86,7 +86,7 @@ jobs:
           echo "=== Starting Bazel build ==="
           python3 build-system/Make/Make.py \
             --cacheDir "$RUNNER_TEMP/telegram-bazel-cache" \
-            build --continueOnError --verbose_failures \
+            build --continueOnError \
             --configurationPath "$RUNNER_TEMP/native-configuration.json" \
             --codesigningInformationPath "$RUNNER_TEMP/native-signing" \
             --buildNumber "$((1000 + GITHUB_RUN_NUMBER))" \
