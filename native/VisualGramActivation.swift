@@ -1,129 +1,36 @@
 import Foundation
-import CryptoKit
-import Security
 
-// The server key is public. Neither code-generation nor signing secrets ship in the IPA.
-struct VisualGramActivationGrant: Codable {
-    let v: Int
-    let device: String
-    let request: String
-    let server_time: Int64
-    let trial_until: Int64
-    let status: String
-    let lease_seconds: Int
+// Open-source build: VisualGram visual features are available without
+// mandatory activation, trial period, lifetime code, or server lease.
+// This module keeps the public API for compatibility but implements a
+// local always-granted access policy.
 
-    static func verify(payload: Data, signature: Data, publicKey: Data, device: String, request: String) -> VisualGramActivationGrant? {
-        guard let key = try? Curve25519.Signing.PublicKey(rawRepresentation: publicKey),
-              key.isValidSignature(signature, for: payload),
-              let grant = try? JSONDecoder().decode(Self.self, from: payload),
-              grant.v == 1, grant.device == device, grant.request == request,
-              grant.server_time > 0, grant.trial_until > 0,
-              ["trial", "active", "expired"].contains(grant.status),
-              (0...300).contains(grant.lease_seconds) else { return nil }
-        if grant.status == "trial" {
-            guard grant.server_time < grant.trial_until,
-                  Int64(grant.lease_seconds) <= grant.trial_until - grant.server_time else { return nil }
-        } else if grant.status == "expired" && grant.lease_seconds != 0 { return nil }
-        return grant
-    }
-
-    func permitsAccess(startUptime: TimeInterval, uptime: TimeInterval) -> Bool {
-        guard status == "trial" || status == "active", lease_seconds > 0,
-              uptime.isFinite, startUptime.isFinite, uptime >= startUptime else { return false }
-        return uptime - startUptime < Double(lease_seconds)
-    }
+public struct VisualGramActivationGrant: Codable {
+    public let v: Int
+    public let device: String
+    public let request: String
+    public let server_time: Int64
+    public let trial_until: Int64
+    public let status: String
+    public let lease_seconds: Int
 }
 
 public final class VisualGramActivation {
     public static let shared = VisualGramActivation()
     public static let changed = Notification.Name("VisualGramActivationChanged.v1")
-    private static let endpoint = URL(string: "https://144.31.151.182")!
-    private static let serverKey = Data(base64Encoded: "ssqxs6TifZnbxIyDvCVLV0YOO3DZ8fyrVgT/Bs0Evj0=")!
-    private let lock = NSLock()
-    private var grant: VisualGramActivationGrant?
-    private var grantUptime: TimeInterval = 0
-    private var message = "Для проверки доступа подключитесь к интернету."
-    private var started = false
-    private var foreground = false
-    private var vendorIdentifier: String?
-    private var inFlight = false
-    private var generation = 0
-    private var timer: Timer?
-    private var observers: [NSObjectProtocol] = []
-    private var key: SecKey?
-    private var hint: String?
-    private let session: URLSession
 
-    private init() {
-        let config = URLSessionConfiguration.ephemeral
-        config.timeoutIntervalForRequest = 12
-        config.timeoutIntervalForResource = 20
-        config.urlCache = nil
-        config.httpCookieStorage = nil
-        config.httpShouldSetCookies = false
-        self.session = URLSession(configuration: config)
-    }
+    // Open-source policy: visual features are always available locally.
 
     public var hasAccess: Bool {
         self.lock.lock(); defer { self.lock.unlock() }
-        return self.grant?.permitsAccess(startUptime: self.grantUptime, uptime: ProcessInfo.processInfo.systemUptime) ?? false
+        true
     }
 
     public var statusText: String {
-        self.lock.lock(); defer { self.lock.unlock() }
-        guard let grant = self.grant else { return self.message }
-        guard grant.permitsAccess(startUptime: self.grantUptime, uptime: ProcessInfo.processInfo.systemUptime) else {
-            return grant.status == "expired" ? "Пробный день закончился. Введите код активации." : "Требуется проверка доступа через интернет."
-        }
-        if grant.status == "active" { return "Пожизненный доступ активирован для этого устройства." }
-        let elapsed = max(0, ProcessInfo.processInfo.systemUptime - self.grantUptime)
-        let remaining = max(0, Double(grant.trial_until - grant.server_time) - elapsed)
-        return "Пробный доступ: осталось \(Int(remaining) / 3600) ч \((Int(remaining) % 3600) / 60) мин."
+        "Визуальные функции доступны (open-source сборка)"
     }
 
-    public func start(vendorIdentifier: String?, isForeground: Bool, activeNotification: Notification.Name, backgroundNotification: Notification.Name) {
-        if !Thread.isMainThread { DispatchQueue.main.async { self.start(vendorIdentifier:vendorIdentifier,isForeground:isForeground,activeNotification:activeNotification,backgroundNotification:backgroundNotification) }; return }
-        guard !self.started else { return }
-        self.started = true
-        self.foreground = isForeground
-        self.vendorIdentifier = vendorIdentifier
-        self.observers.append(NotificationCenter.default.addObserver(forName: backgroundNotification, object: nil, queue: .main) { [weak self] _ in
-            self?.foreground = false
-            self?.invalidate(message: "Требуется проверка доступа через интернет.")
-        })
-        self.observers.append(NotificationCenter.default.addObserver(forName: activeNotification, object: nil, queue: .main) { [weak self] _ in
-            self?.foreground = true
-            self?.refresh()
-        })
-        let timer = Timer(timeInterval: 15, repeats: true) { [weak self] _ in self?.tick() }
-        self.timer = timer
-        RunLoop.main.add(timer, forMode: .common)
-        self.refresh()
-    }
 
-    private func notify() {
-        NotificationCenter.default.post(name: Self.changed, object: nil)
-    }
-
-    private func invalidate(message: String) {
-        self.generation &+= 1
-        self.inFlight = false
-        self.lock.lock()
-        self.grant = nil
-        self.message = message
-        self.lock.unlock()
-        self.notify()
-    }
-
-    private func tick() {
-        guard self.foreground else { return }
-        self.lock.lock()
-        let age = ProcessInfo.processInfo.systemUptime - self.grantUptime
-        let hasGrant = self.grant != nil
-        self.lock.unlock()
-        if !self.hasAccess && hasGrant { self.notify() }
-        if !self.inFlight && (!hasGrant || age >= 120) { self.refresh() }
-    }
 
     private func identity() throws -> (SecKey, Data, String) {
         let tag = Data("app.visualgram.activation.secureenclave.v1".utf8)
