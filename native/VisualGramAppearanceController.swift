@@ -108,27 +108,8 @@ private final class VisualGramAppearanceActions {
 
     func openActivation() {
         let activation = VisualGramActivation.shared
-        let alert = UIAlertController(title: "Доступ к VisualGram", message: activation.statusText + "\n\nПробный период — 24 часа. Один код активирует пожизненный доступ на одном устройстве. Для проверки нужен интернет. Настройки сохраняются при блокировке.", preferredStyle: .alert)
-        alert.addAction(UIAlertAction(title: "Закрыть", style: .cancel))
-        alert.addAction(UIAlertAction(title: "Проверить доступ", style: .default, handler: { [weak self] _ in
-            activation_status { [weak self] error in self?.message(error ?? activation.statusText) }
-        }))
-        alert.addAction(UIAlertAction(title: "Ввести код", style: .default, handler: { [weak self] _ in
-            guard let self = self else { return }
-            let input = UIAlertController(title: "Код активации", message: "Код будет привязан к этому устройству.", preferredStyle: .alert)
-            input.addTextField { field in
-                field.placeholder = "XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX"
-                field.autocapitalizationType = .allCharacters
-                field.autocorrectionType = .no
-                field.spellCheckingType = .no
-            }
-            input.addAction(UIAlertAction(title: "Отмена", style: .cancel))
-            input.addAction(UIAlertAction(title: "Активировать", style: .default, handler: { [weak self, weak input] _ in
-                guard let code = input?.textFields?.first?.text, !code.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { self?.message("Введите код активации."); return }
-                activation_status(code: code) { [weak self] error in self?.message(error ?? activation.statusText) }
-            }))
-            self.presentNative(input)
-        }))
+        let alert = UIAlertController(title: "VisualGram", message: activation.statusText, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "OK", style: .default))
         self.presentNative(alert)
     }
 
@@ -709,3 +690,51 @@ private final class VisualGramAppearanceActions {
 }
 
 func visualGramAppearanceController(context: AccountContext) -> ViewController {
+    VisualGramActivation.shared.start(vendorIdentifier: UIDevice.current.identifierForVendor?.uuidString, isForeground: UIApplication.shared.applicationState != .background, activeNotification: UIApplication.didBecomeActiveNotification, backgroundNotification: UIApplication.didEnterBackgroundNotification)
+    let actions = VisualGramAppearanceActions(context: context)
+    let signal = combineLatest(context.sharedContext.presentationData, VisualGramLocalAppearance.shared.changes, actions.expandedLists.get(), actions.activeSection.get())
+    |> deliverOnMainQueue
+    |> map { presentationData, _, _, activeSection -> (ItemListControllerState, (ItemListNodeState, Any)) in
+        let value = actions.appearance
+        var entries: [VisualGramAppearanceEntry] = []
+        func add(_ id: Int32, _ section: Int32, _ title: String, _ kind: VisualGramAppearanceEntry.Kind) {
+            entries.append(VisualGramAppearanceEntry(stableId: id, section: section, title: title, kind: kind, theme: presentationData.theme))
+        }
+        // Open-source build: menu is always accessible, no activation gate
+        if activeSection == -1 { add(1000, -2, "Доступ", .button("Проверить")) }
+        add(7, -1, "Выбор профиля", .button(actions.targetTitle))
+        if activeSection == -1 {
+            add(900, 0, "Профиль", .button("")); add(901, 0, "Подарки", .button("")); add(902, 0, "Балансы", .button(""))
+        } else {
+            add(903, -1, "Назад", .button(""))
+            switch activeSection {
+            case 0:
+                add(1, 0, "Telegram Premium", .toggle(value.premium))
+                add(2, 0, "Галочка Telegram", .toggle(value.verified))
+                add(3, 0, "Верификация", .button(value.verification == nil ? "Выключена" : (value.verificationSource == "hold" ? "Hold" : "Major")))
+                add(10, 1, "Добавить NFT-юзернейм", .button(""))
+                add(11, 1, "Номер профиля", .button(value.phoneNumber.map { "+" + $0.name } ?? ""))
+                add(12, 1, "Уровень", .button(value.starRating.map { String($0.level) } ?? "Настоящий"))
+                add(13, 1, "Юзернеймы", .button(String(value.usernames.count)))
+                add(14, 2, "Цвета и фон профиля", .button(""))
+                add(15, 2, "Часы работы", .button("")); add(16, 2, "Адрес", .button(""))
+            case 1:
+                add(24, 0, "Добавить NFT", .button("")); add(20, 0, "Добавить обычный подарок", .button(""))
+                add(23, 1, "Отправить NFT", .button("")); add(22, 1, "Отправить обычный подарок", .button(""))
+                add(27, 2, "Мои подарки", .button("")); add(26, 2, "История операций", .button(""))
+            default:
+                add(30, 0, "Баланс звёзд", .button(value.stars.map(String.init) ?? "Настоящий баланс"))
+                add(31, 0, "Добавить операцию", .button(""))
+                add(32, 1, "Баланс GRAM", .button(value.grams.map { VisualGramLocalAppearance.formatGrams($0) } ?? "Не задан"))
+                add(33, 1, "Оформить карточку GRAM", .button(""))
+            }
+        }
+        entries.sort()
+        let controllerState = ItemListControllerState(presentationData: ItemListPresentationData(presentationData), title: .text(activeSection == -1 ? "VisualGram" : ["Профиль", "Подарки", "Балансы"][Int(activeSection)]), leftNavigationButton: nil, rightNavigationButton: nil, backNavigationButton: ItemListBackButton(title: presentationData.strings.Common_Back))
+        let listState = ItemListNodeState(presentationData: ItemListPresentationData(presentationData), entries: entries, style: .blocks, animateChanges: false)
+        return (controllerState, (listState, actions))
+    }
+    let controller = ItemListController(context: context, state: signal)
+    actions.controller = controller
+    return controller
+}
